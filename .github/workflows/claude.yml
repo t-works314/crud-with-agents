@@ -1,0 +1,55 @@
+name: Claude
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Task issue のラベル feature:<name> から、作業元ブランチと dev ブランチ名の接頭辞を決める
+      - name: Resolve feature branch
+        id: feature
+        env:
+          LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          name=$(echo "$LABELS" | jq -r '(. // [])[] | select(startswith("feature:")) | sub("^feature:"; "")' | head -n 1)
+          if [ -n "$name" ] && echo "$name" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
+            echo "base=feature/$name" >> "$GITHUB_OUTPUT"
+            echo "prefix=dev/$name/" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+            echo "prefix=claude/" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: ${{ steps.feature.outputs.base }}
+          branch_prefix: ${{ steps.feature.outputs.prefix }}
+          branch_name_template: "{{prefix}}{{entityNumber}}-{{description}}"
+          claude_args: |
+            --allowedTools "Bash(git:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*)"
